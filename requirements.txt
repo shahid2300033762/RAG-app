@@ -9,3 +9,4 @@ chromadb
 pypdf
 python-docx
 langchain-text-splitters
+google-generativeai

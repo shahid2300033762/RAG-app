@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
+import google.generativeai as genai
 
 # Dependencies for RAG & Extractions
 import chromadb
@@ -32,6 +33,13 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 CHROMA_TENANT = os.getenv("CHROMA_TENANT", "")
 CHROMA_DATABASE = os.getenv("CHROMA_DATABASE", "")
 CHROMA_API_KEY = os.getenv("CHROMA_API_KEY", "")
+
+# Gemini Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("WARNING: GEMINI_API_KEY is not set. Chatbot will fail to generate answers.")
 
 # We initialize clients dynamically if values aren't present so startup doesn't crash on invalid credentials, 
 # but log warning.
@@ -213,41 +221,52 @@ async def upload_file(file: UploadFile = File(...)):
 async def chat(req: ChatRequest):
     if not collection:
         raise HTTPException(status_code=500, detail="Chroma DB collection is not initialized.")
+
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured.")
         
     try:
         # Generate embedding for the query
         query_embedding = embedding_model.encode([req.message]).tolist()
         
-        # Retrieve top 5 most relevant documents
-        results = collection.query(
-            query_embeddings=query_embedding,
-            n_results=5
-        )
-        
+        # Cap n_results to available document count to avoid ChromaDB errors
+        doc_count = collection.count()
+        n_results = min(5, doc_count) if doc_count > 0 else 0
+
         context_text = ""
-        if results and 'documents' in results and results['documents']:
-            doc_list = results['documents'][0]
-            context_text = "\n\n---\n\n".join(doc_list)
-            
+        if n_results > 0:
+            results = collection.query(
+                query_embeddings=query_embedding,
+                n_results=n_results
+            )
+            if results and 'documents' in results and results['documents']:
+                doc_list = results['documents'][0]
+                context_text = "\n\n---\n\n".join(doc_list)
+
+        # Build conversation history for multi-turn context
+        history_text = ""
+        if req.history:
+            history_lines = []
+            for msg in req.history:
+                role = "User" if msg.role == "user" else "Assistant"
+                history_lines.append(f"{role}: {msg.content}")
+            history_text = "\n".join(history_lines) + "\n\n"
+
         # Construct prompt for the LLM
-        prompt = f"You are an intelligent assistant. Use the following context documents to answer the user's question. If the context does not contain the answer, say you don't know based on the provided documents.\n\nContext:\n{context_text}\n\nUser Question: {req.message}\n\nAnswer:"
+        context_section = f"Context:\n{context_text}\n\n" if context_text else "No context documents available.\n\n"
+        prompt = (
+            f"You are an intelligent assistant. Use the following context documents to answer the user's question. "
+            f"If the context does not contain the answer, say you don't know based on the provided documents.\n\n"
+            f"{context_section}"
+            f"{history_text}"
+            f"User: {req.message}\n\nAnswer:"
+        )
+             
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
         
-        # Call local Ollama
-        ollama_url = "http://localhost:11434/api/generate"
-        payload = {
-            "model": "llama3.2:1b",
-            "prompt": prompt,
-            "stream": False
-        }
+        return {"response": response.text}
         
-        response = requests.post(ollama_url, json=payload, timeout=120)
-        response.raise_for_status()
-        
-        data = response.json()
-        return {"response": data.get("response", "No response generated")}
-        
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Failed to connect to local Ollama (ensure it is running on port 11434): {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
