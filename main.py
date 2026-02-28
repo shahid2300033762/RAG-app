@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+from google import genai
 
 # Dependencies for RAG & Extractions
 import chromadb
@@ -36,9 +36,7 @@ CHROMA_API_KEY = os.getenv("CHROMA_API_KEY", "")
 
 # Gemini Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
+if not GEMINI_API_KEY:
     print("WARNING: GEMINI_API_KEY is not set. Chatbot will fail to generate answers.")
 
 # We initialize clients dynamically if values aren't present so startup doesn't crash on invalid credentials, 
@@ -262,8 +260,11 @@ async def chat(req: ChatRequest):
             f"User: {req.message}\n\nAnswer:"
         )
              
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
         
         return {"response": response.text}
         
