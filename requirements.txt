@@ -1,11 +1,11 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 python-dotenv
 beautifulsoup4
 requests
 sentence-transformers
-chromadb
+chromadb==0.6.3
 pypdf
 python-docx
 langchain-text-splitters
